@@ -56,11 +56,23 @@
         if (!inputs.length) return;
         const txt = item.innerText.toLowerCase();
         let v = null;
-        if (txt.includes('name') && !txt.includes('branch')) v = data.userName;
+        if (txt.includes('name') && !txt.includes('branch')) {
+          if (txt.includes('father') || txt.includes('mother') || txt.includes('parent') || txt.includes('middle')) {
+            v = null; // Do not auto-fill parents or middle names
+          } else if (txt.includes('first')) {
+            v = data.userName.split(' ')[0];
+          } else if (txt.includes('sur') || txt.includes('last')) {
+            const parts = data.userName.split(' ');
+            v = parts.length > 1 ? parts.slice(1).join(' ') : '';
+          } else {
+            v = data.userName;
+          }
+        }
         else if (txt.includes('email')) v = data.userEmail;
         else if (txt.includes('roll')) v = data.userRollNo;
         else if (txt.includes('div')) v = data.userDiv;
         else if (txt.includes('branch') || txt.includes('dept')) v = data.userBranch;
+        
         if (v && !inputs[0].value) { inputs[0].focus(); setNative(inputs[0], v); inputs[0].blur(); }
       });
     });
