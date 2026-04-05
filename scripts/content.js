@@ -28,7 +28,12 @@
     if (document.getElementById('fs-fab')) return;
     const b = document.createElement('button');
     b.id = 'fs-fab';
-    b.textContent = '🤖 Solve Form';
+    b.innerHTML = `
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square">
+        <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"></polygon>
+      </svg>
+      SOLVE_FORM
+    `;
     b.addEventListener('click', runSolver);
     document.body.appendChild(b);
   }
@@ -120,9 +125,11 @@
         const label = (r.getAttribute('aria-label') || '').trim().toLowerCase();
         if (label === targetStr) {
           const el = r.closest('label') || r;
-          el.style.setProperty('outline', '3px solid #34d399', 'important');
-          el.style.setProperty('background-color', 'rgba(52, 211, 153, 0.15)', 'important');
-          el.style.setProperty('border-radius', '8px', 'important');
+          el.style.setProperty('outline', '2px solid #d4ff00', 'important');
+          el.style.setProperty('outline-offset', '4px', 'important');
+          el.style.setProperty('background-color', 'rgba(212, 255, 0, 0.05)', 'important');
+          el.style.setProperty('border-radius', '2px', 'important');
+          el.style.setProperty('box-shadow', 'inset 4px 0 0 #d4ff00', 'important');
           console.log(`[FormSolver v3.1]   ✅ Radio MATCH: "${label}"`);
         }
       });
@@ -136,9 +143,11 @@
         const label = (cb.getAttribute('aria-label') || '').trim().toLowerCase();
         if (ansSet.has(label)) {
           const el = cb.closest('label') || cb;
-          el.style.setProperty('outline', '3px solid #34d399', 'important');
-          el.style.setProperty('background-color', 'rgba(52, 211, 153, 0.15)', 'important');
-          el.style.setProperty('border-radius', '8px', 'important');
+          el.style.setProperty('outline', '2px solid #d4ff00', 'important');
+          el.style.setProperty('outline-offset', '4px', 'important');
+          el.style.setProperty('background-color', 'rgba(212, 255, 0, 0.05)', 'important');
+          el.style.setProperty('border-radius', '2px', 'important');
+          el.style.setProperty('box-shadow', 'inset 4px 0 0 #d4ff00', 'important');
           console.log(`[FormSolver v3.1]   ✅ Checkbox MATCH: "${label}"`);
         }
       });
@@ -156,15 +165,21 @@
   // ── Main solver ──
   async function runSolver() {
     const fab = document.getElementById('fs-fab');
-    fab.textContent = '⏳ Solving...';
+    fab.innerHTML = '<span class="spinner"></span> SYS.SOLVING...';
     fab.disabled = true;
 
-    showToast('Scanning questions...');
+    showToast('Scanning DOM matrix...');
     const questions = scrapeQuestions();
 
     if (!questions.length) {
-      showToast('No questions found!');
-      fab.textContent = '🤖 Solve Form'; fab.disabled = false;
+      showToast('No diagnostic targets found.');
+      fab.innerHTML = `
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square">
+          <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"></polygon>
+        </svg>
+        SOLVE_FORM
+      `;
+      fab.disabled = false;
       return;
     }
 
@@ -187,9 +202,15 @@
           const q = questions.find(x => x.index === ans.index);
           if (q) { applyAnswer(q, ans); count++; }
         });
-        showToast(`Done! ${count} answers processed. Green = correct.`);
+        showToast(`Target acquired. ${count} anomalies resolved.`);
       }
-      fab.textContent = '🤖 Solve Form'; fab.disabled = false;
+      fab.innerHTML = `
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square">
+          <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"></polygon>
+        </svg>
+        SOLVE_FORM
+      `;
+      fab.disabled = false;
     });
   }
 

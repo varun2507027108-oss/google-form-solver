@@ -4,65 +4,72 @@
   <meta charset="UTF-8">
   <title>Form Solver Settings</title>
   <link rel="stylesheet" href="popup.css">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
 </head>
 <body>
-  <div class="header">
-    <div class="logo">🤖</div>
-    <h1>Form Solver</h1>
-    <p class="subtitle">Auto-fill &amp; AI Solver</p>
+  <div class="header stagger-1">
+    <div class="logo">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="miter">
+        <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"></polygon>
+        <line x1="12" y1="22" x2="12" y2="12"></line>
+        <line x1="22" y1="8.5" x2="12" y2="12"></line>
+        <line x1="2" y1="8.5" x2="12" y2="12"></line>
+      </svg>
+    </div>
+    <h1>FORM_SOLVER</h1>
+    <p class="subtitle">AUTOMATED ENGINEERING DIAGNOSTICS</p>
   </div>
 
-  <div class="section">
-    <div class="section-title">Your Details</div>
+  <div class="section stagger-2">
+    <div class="section-title">[ SYS.USER_DETAILS ]</div>
 
     <div class="field">
-      <label for="userName">Full Name</label>
+      <label for="userName">FULL NAME</label>
       <input type="text" id="userName" placeholder="e.g. Varun Sharma">
     </div>
 
     <div class="field">
-      <label for="userEmail">Email</label>
+      <label for="userEmail">EMAIL</label>
       <input type="email" id="userEmail" placeholder="e.g. varun@college.edu">
     </div>
 
     <div class="field-row">
       <div class="field">
-        <label for="userRollNo">Roll No</label>
+        <label for="userRollNo">ROLL NO</label>
         <input type="text" id="userRollNo" placeholder="e.g. 42">
       </div>
       <div class="field">
-        <label for="userDiv">Div</label>
+        <label for="userDiv">DIV</label>
         <input type="text" id="userDiv" placeholder="e.g. A">
       </div>
     </div>
 
     <div class="field">
-      <label for="userBranch">Branch</label>
+      <label for="userBranch">BRANCH</label>
       <input type="text" id="userBranch" placeholder="e.g. Computer Science">
     </div>
   </div>
 
-  <div class="section">
-    <div class="section-title">AI Configuration</div>
+  <div class="section stagger-3">
+    <div class="section-title">[ API.CONFIG ]</div>
     <div class="field">
-      <label for="apiKey">Gemini API Key <a href="https://aistudio.google.com/app/apikey" target="_blank" class="key-link">(Get Free Key)</a></label>
+      <label for="apiKey">GEMINI KEY <a href="https://aistudio.google.com/app/apikey" target="_blank" class="key-link">(GENERATE)</a></label>
       <div class="api-key-wrapper">
-        <input type="password" id="apiKey" placeholder="Paste your API key here">
-        <button id="toggleKey" class="toggle-btn" title="Show/Hide Key">👁️</button>
+        <input type="password" id="apiKey" placeholder="Paste key string">
+        <button id="toggleKey" class="toggle-btn" title="Toggle Visibility">👁️</button>
       </div>
     </div>
   </div>
 
-  <button id="saveBtn" class="save-btn">
-    <span class="save-text">Save Settings</span>
+  <button id="saveBtn" class="save-btn stagger-4">
+    <span class="save-text">INITIALIZE_SETTINGS</span>
   </button>
 
-  <div id="statusMsg" class="status-msg"></div>
+  <div id="statusMsg" class="status-msg stagger-4"></div>
 
-  <div class="footer">
-    <span>v2.0</span>
-    <span>Gemini 1.5 Flash (Free)</span>
+  <div class="footer stagger-4">
+    <span>v2.1</span>
+    <span style="color: var(--accent);">FLASH_CORE_ACTIVE</span>
   </div>
 
   <script src="popup.js"></script>
