@@ -136,7 +136,11 @@ async function solveWithGemini(apiKey, questions) {
 
   const body = {
     contents: [{ role: 'user', parts }],
-    generationConfig: { temperature: 0.1, maxOutputTokens: 4096 }
+    generationConfig: { 
+      temperature: 0.1, 
+      maxOutputTokens: 4096,
+      responseMimeType: 'application/json' 
+    }
   };
 
   const resp = await fetchWithTimeout(url, {
@@ -184,9 +188,6 @@ async function solveWithGemini(apiKey, questions) {
   if (start !== -1 && end > start) {
     cleaned = cleaned.substring(start, end + 1);
   }
-
-  // Safety net: force double quotes around keys if AI forgot them
-  cleaned = cleaned.replace(/([{,]\s*)(index|answer)(\s*:)/g, '$1"$2"$3');
 
   return JSON.parse(cleaned);
 }
