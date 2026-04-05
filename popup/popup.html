@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Form Solver Settings</title>
+  <link rel="stylesheet" href="popup.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="header">
+    <div class="logo">🤖</div>
+    <h1>Form Solver</h1>
+    <p class="subtitle">Auto-fill &amp; AI Solver</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Your Details</div>
+
+    <div class="field">
+      <label for="userName">Full Name</label>
+      <input type="text" id="userName" placeholder="e.g. Varun Sharma">
+    </div>
+
+    <div class="field">
+      <label for="userEmail">Email</label>
+      <input type="email" id="userEmail" placeholder="e.g. varun@college.edu">
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label for="userRollNo">Roll No</label>
+        <input type="text" id="userRollNo" placeholder="e.g. 42">
+      </div>
+      <div class="field">
+        <label for="userDiv">Div</label>
+        <input type="text" id="userDiv" placeholder="e.g. A">
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="userBranch">Branch</label>
+      <input type="text" id="userBranch" placeholder="e.g. Computer Science">
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">AI Configuration</div>
+    <div class="field">
+      <label for="apiKey">Gemini API Key <a href="https://aistudio.google.com/app/apikey" target="_blank" class="key-link">(Get Free Key)</a></label>
+      <div class="api-key-wrapper">
+        <input type="password" id="apiKey" placeholder="Paste your API key here">
+        <button id="toggleKey" class="toggle-btn" title="Show/Hide Key">👁️</button>
+      </div>
+    </div>
+  </div>
+
+  <button id="saveBtn" class="save-btn">
+    <span class="save-text">Save Settings</span>
+  </button>
+
+  <div id="statusMsg" class="status-msg"></div>
+
+  <div class="footer">
+    <span>v2.0</span>
+    <span>Gemini 1.5 Flash (Free)</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

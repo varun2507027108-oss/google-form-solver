@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Form Solver",
+  "version": "3.0",
+  "description": "Auto-fills details and intelligently solves questions on Google Forms using Gemini AI.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://docs.google.com/forms/*",
+    "*://*.googleusercontent.com/*",
+    "*://*.ggpht.com/*",
+    "*://*.googleapis.com/*",
+    "*://*.google.com/*"
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Form Solver"
+  },
+  "background": {
+    "service_worker": "scripts/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://docs.google.com/forms/*"],
+      "js": ["scripts/content.js"],
+      "css": ["styles/overlay.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
