@@ -29,8 +29,10 @@
     const b = document.createElement('button');
     b.id = 'fs-fab';
     b.innerHTML = `
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square">
-        <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"></polygon>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+        <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+        <line x1="12" y1="22.08" x2="12" y2="12"></line>
       </svg>
       SOLVE_FORM
     `;
@@ -125,11 +127,11 @@
         const label = (r.getAttribute('aria-label') || '').trim().toLowerCase();
         if (label === targetStr) {
           const el = r.closest('label') || r;
-          el.style.setProperty('outline', '2px solid #d4ff00', 'important');
+          el.style.setProperty('outline', '2px solid #00f0ff', 'important');
           el.style.setProperty('outline-offset', '4px', 'important');
-          el.style.setProperty('background-color', 'rgba(212, 255, 0, 0.05)', 'important');
+          el.style.setProperty('background-color', 'rgba(0, 240, 255, 0.05)', 'important');
           el.style.setProperty('border-radius', '2px', 'important');
-          el.style.setProperty('box-shadow', 'inset 4px 0 0 #d4ff00', 'important');
+          el.style.setProperty('box-shadow', 'inset 4px 0 0 #00f0ff', 'important');
           console.log(`[FormSolver v3.1]   ✅ Radio MATCH: "${label}"`);
         }
       });
@@ -143,11 +145,11 @@
         const label = (cb.getAttribute('aria-label') || '').trim().toLowerCase();
         if (ansSet.has(label)) {
           const el = cb.closest('label') || cb;
-          el.style.setProperty('outline', '2px solid #d4ff00', 'important');
+          el.style.setProperty('outline', '2px solid #00f0ff', 'important');
           el.style.setProperty('outline-offset', '4px', 'important');
-          el.style.setProperty('background-color', 'rgba(212, 255, 0, 0.05)', 'important');
+          el.style.setProperty('background-color', 'rgba(0, 240, 255, 0.05)', 'important');
           el.style.setProperty('border-radius', '2px', 'important');
-          el.style.setProperty('box-shadow', 'inset 4px 0 0 #d4ff00', 'important');
+          el.style.setProperty('box-shadow', 'inset 4px 0 0 #00f0ff', 'important');
           console.log(`[FormSolver v3.1]   ✅ Checkbox MATCH: "${label}"`);
         }
       });
@@ -174,8 +176,8 @@
     if (!questions.length) {
       showToast('No diagnostic targets found.');
       fab.innerHTML = `
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square">
-          <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"></polygon>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"></path>
         </svg>
         SOLVE_FORM
       `;
@@ -205,8 +207,8 @@
         showToast(`Target acquired. ${count} anomalies resolved.`);
       }
       fab.innerHTML = `
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square">
-          <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"></polygon>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"></path>
         </svg>
         SOLVE_FORM
       `;
