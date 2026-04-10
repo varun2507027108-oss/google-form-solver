@@ -1,13 +1,19 @@
 /**
- * FORM SOLVER v3.1 — Content Script
+ * FORM SOLVER v3.5 — Content Script
+ * Multi-page form support via MutationObserver.
  * Sends image URLs to background (no canvas CORS issues).
  */
 (function () {
   'use strict';
 
-  console.log('[FormSolver v3.1] Script loaded at', new Date().toISOString());
+  console.log('[FormSolver v3.5] Script loaded at', new Date().toISOString());
 
   const INITIAL_WAIT = 2500;
+  const PAGE_CHANGE_DEBOUNCE = 800;
+
+  let lastPageSignature = '';
+  let pageChangeTimer = null;
+  let observer = null;
 
   // ── Toast ──
   function showToast(msg) {
@@ -37,6 +43,14 @@
     document.body.appendChild(b);
   }
 
+  // ── Ensure FAB persists (Google Forms may nuke custom DOM on page change) ──
+  function ensureFAB() {
+    if (!document.getElementById('fs-fab')) {
+      console.log('[FormSolver v3.5] FAB missing after page change — re-injecting');
+      injectFAB();
+    }
+  }
+
   // ── Set native value (bypass frameworks) ──
   function setNative(el, val) {
     const p = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -46,11 +60,15 @@
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
-  // ── Auto-fill personal details ──
+  // ── Auto-fill personal details (runs on every page) ──
   function autoFill() {
     chrome.storage.local.get(['userName', 'userEmail', 'userRollNo', 'userDiv', 'userBranch'], data => {
       if (!data.userName && !data.userEmail) return;
-      const items = document.querySelectorAll('div[role="listitem"]');
+
+      // Get only VISIBLE list items on the current page/section
+      const items = getVisibleListItems();
+      let filled = 0;
+
       items.forEach(item => {
         const inputs = item.querySelectorAll('input[type="text"], input[type="email"], textarea');
         if (!inputs.length) return;
@@ -72,17 +90,163 @@
         else if (txt.includes('roll')) v = data.userRollNo;
         else if (txt.includes('div')) v = data.userDiv;
         else if (txt.includes('branch') || txt.includes('dept')) v = data.userBranch;
-        
-        if (v && !inputs[0].value) { inputs[0].focus(); setNative(inputs[0], v); inputs[0].blur(); }
+
+        if (v && !inputs[0].value) {
+          inputs[0].focus();
+          setNative(inputs[0], v);
+          inputs[0].blur();
+          filled++;
+        }
       });
+
+      if (filled > 0) {
+        console.log(`[FormSolver v3.5] Auto-filled ${filled} fields on current page`);
+      }
     });
   }
 
-  // ── Scrape questions — send image URLs, not base64 ──
+  // ── Get only visible list items (handles multi-page forms) ──
+  function getVisibleListItems() {
+    const allItems = document.querySelectorAll('div[role="listitem"]');
+    const visible = [];
+    for (const item of allItems) {
+      // Skip items that are hidden (display:none, visibility:hidden, or zero-size)
+      if (item.offsetParent === null && getComputedStyle(item).position !== 'fixed') continue;
+      if (item.offsetHeight === 0 && item.offsetWidth === 0) continue;
+      visible.push(item);
+    }
+    return visible;
+  }
+
+  // ── Generate a signature of the current page to detect navigation ──
+  function getPageSignature() {
+    const items = getVisibleListItems();
+    // Use the text of headings + count of items as a fingerprint
+    const parts = [];
+    for (const item of items) {
+      const heading = item.querySelector('div[role="heading"]');
+      if (heading) {
+        parts.push(heading.innerText.substring(0, 60).trim());
+      }
+    }
+    // Also include any "Page X of Y" indicator or progress bar state
+    const progressEl = document.querySelector('[role="progressbar"]');
+    const progress = progressEl ? progressEl.getAttribute('aria-valuenow') || '' : '';
+    return `${items.length}|${progress}|${parts.join('||')}`;
+  }
+
+  // ── Called when we detect a page change in the form ──
+  function onPageChange() {
+    const newSig = getPageSignature();
+    if (newSig === lastPageSignature) return; // No actual change
+
+    lastPageSignature = newSig;
+    console.log('[FormSolver v3.5] Page change detected. New signature:', newSig.substring(0, 100));
+
+    // Re-ensure FAB exists
+    ensureFAB();
+
+    // Re-run autofill for the new page
+    autoFill();
+
+    // Clear any previous answer highlights from old page
+    clearHighlights();
+  }
+
+  // ── Clear stale highlights from previous page ──
+  function clearHighlights() {
+    document.querySelectorAll('.fs-correct-highlight').forEach(el => {
+      el.classList.remove('fs-correct-highlight');
+    });
+    // Also clear inline styles from the old highlighting approach
+    document.querySelectorAll('[style*="inset 4px 0 0 #00f0ff"]').forEach(el => {
+      el.style.removeProperty('outline');
+      el.style.removeProperty('outline-offset');
+      el.style.removeProperty('background-color');
+      el.style.removeProperty('border-radius');
+      el.style.removeProperty('box-shadow');
+    });
+  }
+
+  // ── MutationObserver to detect page changes in multi-section forms ──
+  function startObserver() {
+    // Google Forms renders sections inside a specific container
+    // We watch the form container for child additions/removals
+    const formContainer = document.querySelector('form')
+      || document.querySelector('[role="list"]')?.parentElement
+      || document.body;
+
+    observer = new MutationObserver((mutations) => {
+      // Debounce: Google Forms makes many rapid DOM changes during transitions
+      clearTimeout(pageChangeTimer);
+      pageChangeTimer = setTimeout(() => {
+        // Check if any mutation actually involves list items or structural changes
+        let hasStructuralChange = false;
+        for (const m of mutations) {
+          if (m.type === 'childList' && (m.addedNodes.length > 0 || m.removedNodes.length > 0)) {
+            // Check if the change involves form content (not just our own injections)
+            for (const node of m.addedNodes) {
+              if (node.nodeType === Node.ELEMENT_NODE && !node.id?.startsWith('fs-')) {
+                hasStructuralChange = true;
+                break;
+              }
+            }
+            for (const node of m.removedNodes) {
+              if (node.nodeType === Node.ELEMENT_NODE && !node.id?.startsWith('fs-')) {
+                hasStructuralChange = true;
+                break;
+              }
+            }
+          }
+          if (hasStructuralChange) break;
+        }
+
+        if (hasStructuralChange) {
+          onPageChange();
+        }
+      }, PAGE_CHANGE_DEBOUNCE);
+    });
+
+    observer.observe(formContainer, {
+      childList: true,
+      subtree: true
+    });
+
+    console.log('[FormSolver v3.5] MutationObserver watching:', formContainer.tagName);
+  }
+
+  // ── Also intercept "Next" and "Back" button clicks directly ──
+  function interceptNavButtons() {
+    document.addEventListener('click', (e) => {
+      const target = e.target.closest('[role="button"], button');
+      if (!target) return;
+
+      const text = (target.innerText || target.textContent || '').trim().toLowerCase();
+      // Google Forms uses "Next", "Back", "Submit" — various languages too
+      const isNavButton = ['next', 'back', 'previous', 'submit',
+        'अगला', 'पिछला', // Hindi
+        'आगे', 'पीछे'
+      ].some(kw => text.includes(kw));
+
+      // Also catch the arrow-style navigation buttons (no text, just icons)
+      const ariaLabel = (target.getAttribute('aria-label') || '').toLowerCase();
+      const isNavArrow = ariaLabel.includes('next') || ariaLabel.includes('back')
+        || ariaLabel.includes('previous') || ariaLabel.includes('forward');
+
+      if (isNavButton || isNavArrow) {
+        console.log(`[FormSolver v3.5] Nav button clicked: "${text || ariaLabel}"`);
+        // Wait for the new page to render before re-processing
+        setTimeout(() => onPageChange(), 1200);
+        setTimeout(() => onPageChange(), 2500); // Double-check in case of slow render
+      }
+    }, true); // Capture phase to catch it before Google's handler
+  }
+
+  // ── Scrape questions — only from the VISIBLE page ──
   function scrapeQuestions() {
-    const items = document.querySelectorAll('div[role="listitem"]');
+    const items = getVisibleListItems();
     const qs = [];
-    console.log('[FormSolver v3.1] Found', items.length, 'containers');
+    console.log('[FormSolver v3.5] Visible containers:', items.length);
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
@@ -100,7 +264,7 @@
       const img = item.querySelector('img[src]:not([src*="svg"])');
       if (img && img.src) {
         imageUrl = img.src;
-        console.log('[FormSolver v3.1] Image URL for Q' + i + ':', imageUrl.substring(0, 100));
+        console.log('[FormSolver v3.5] Image URL for Q' + i + ':', imageUrl.substring(0, 100));
       }
 
       let type = null, opts = [];
@@ -115,7 +279,7 @@
       }
 
       if (type) {
-        console.log(`[FormSolver v3.1] Q${i}: "${title}" (${type}) opts=[${opts.join(', ')}] img=${!!imageUrl}`);
+        console.log(`[FormSolver v3.5] Q${i}: "${title}" (${type}) opts=[${opts.join(', ')}] img=${!!imageUrl}`);
         qs.push({ index: i, question: title, type, options: opts, imageUrl, container: item });
       }
     }
@@ -126,7 +290,7 @@
   function applyAnswer(q, ansObj) {
     const c = q.container;
     const target = ansObj.answer;
-    console.log(`[FormSolver v3.1] Applying Q${q.index}: AI said "${target}"`);
+    console.log(`[FormSolver v3.5] Applying Q${q.index}: AI said "${target}"`);
 
     if (q.type === 'radio') {
       const radios = c.querySelectorAll('div[role="radio"]');
@@ -141,7 +305,7 @@
           el.style.setProperty('background-color', 'rgba(0, 240, 255, 0.05)', 'important');
           el.style.setProperty('border-radius', '2px', 'important');
           el.style.setProperty('box-shadow', 'inset 4px 0 0 #00f0ff', 'important');
-          console.log(`[FormSolver v3.1]   ✅ Radio MATCH: "${label}"`);
+          console.log(`[FormSolver v3.5]   ✅ Radio MATCH: "${label}"`);
         }
       });
 
@@ -159,7 +323,7 @@
           el.style.setProperty('background-color', 'rgba(0, 240, 255, 0.05)', 'important');
           el.style.setProperty('border-radius', '2px', 'important');
           el.style.setProperty('box-shadow', 'inset 4px 0 0 #00f0ff', 'important');
-          console.log(`[FormSolver v3.1]   ✅ Checkbox MATCH: "${label}"`);
+          console.log(`[FormSolver v3.5]   ✅ Checkbox MATCH: "${label}"`);
         }
       });
 
@@ -179,17 +343,21 @@
     fab.classList.add('solving');
     fab.disabled = true;
 
-    showToast('Scanning DOM matrix...');
+    showToast('Scanning current page...');
+
+    // Small delay to ensure DOM is fully settled (important after page navigation)
+    await new Promise(r => setTimeout(r, 300));
+
     const questions = scrapeQuestions();
 
     if (!questions.length) {
-      showToast('No diagnostic targets found.');
+      showToast('No questions found on this page. Try clicking the button after the page fully loads.');
       fab.classList.remove('solving');
       fab.disabled = false;
       return;
     }
 
-    showToast(`Found ${questions.length} questions. Sending to AI (with images)...`);
+    showToast(`Found ${questions.length} questions on this page. Sending to AI...`);
 
     // Send image URLs (not base64) — background will fetch them
     const payload = questions.map(q => ({
@@ -208,13 +376,31 @@
           const q = questions.find(x => x.index === ans.index);
           if (q) { applyAnswer(q, ans); count++; }
         });
-        showToast(`Target acquired. ${count} anomalies resolved.`);
+
+        // Show which provider was used
+        const provider = (response.provider || 'gemini').toUpperCase();
+        const fallbackNote = response.fallback ? ' (Gemini overloaded → fallback)' : '';
+        showToast(`${count} anomalies resolved via ${provider}${fallbackNote}`);
       }
       fab.classList.remove('solving');
       fab.disabled = false;
     });
   }
 
-  // ── Init ──
-  setTimeout(() => { injectFAB(); autoFill(); }, INITIAL_WAIT);
+  // ══════════════════════════════════════════════════
+  //  INIT — with multi-page awareness
+  // ══════════════════════════════════════════════════
+  setTimeout(() => {
+    injectFAB();
+    autoFill();
+
+    // Record initial page signature
+    lastPageSignature = getPageSignature();
+
+    // Start watching for page changes (Next/Back in multi-section forms)
+    startObserver();
+    interceptNavButtons();
+
+    console.log('[FormSolver v3.5] Initialized with multi-page support. Signature:', lastPageSignature.substring(0, 80));
+  }, INITIAL_WAIT);
 })();

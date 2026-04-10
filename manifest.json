@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Form Solver",
-  "version": "3.0",
-  "description": "Auto-fills details and intelligently solves questions on Google Forms using Gemini AI.",
+  "version": "3.5",
+  "description": "Auto-fills details and intelligently solves questions on Google Forms using Gemini AI with Groq fallback.",
   "permissions": [
     "storage",
     "activeTab",
@@ -13,7 +13,8 @@
     "*://*.googleusercontent.com/*",
     "*://*.ggpht.com/*",
     "*://*.googleapis.com/*",
-    "*://*.google.com/*"
+    "*://*.google.com/*",
+    "*://api.groq.com/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",

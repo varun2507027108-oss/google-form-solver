@@ -1,17 +1,22 @@
 /**
- * FORM SOLVER v3.1 — Background Service Worker
- * Fetches images from Google CDN using extension permissions.
- * Sends multimodal payload to Gemini.
+ * FORM SOLVER v3.5 — Background Service Worker
+ * Dual-provider: Gemini (priority) → Groq (fallback)
+ * Handles both image-based and text-only questions.
+ * Parallel image fetching for speed.
  */
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
-const TIMEOUT_MS = 90000;
+const GROQ_MODEL = 'llama-3.3-70b-versatile';
+const TIMEOUT_MS = 45000;
+
+// Rate-limit tracking: avoid hammering Gemini if it's overloaded
+let geminiBackoffUntil = 0;
 
 // ── Listen for messages ──
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'solveQuestions') {
     handleSolve(request.questions)
-      .then(answers => sendResponse({ answers }))
+      .then(result => sendResponse(result))
       .catch(err => {
         console.error('[FormSolver BG] Error:', err);
         sendResponse({ error: err.message || 'Unknown error' });
@@ -21,65 +26,148 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 async function handleSolve(questions) {
-  const data = await chrome.storage.local.get(['apiKey']);
-  if (!data.apiKey) throw new Error('No API key. Open extension popup and save your Gemini API Key.');
-  return await solveWithGemini(data.apiKey, questions);
+  const data = await chrome.storage.local.get(['apiKey', 'groqApiKey']);
+  const hasGemini = !!data.apiKey;
+  const hasGroq = !!data.groqApiKey;
+
+  if (!hasGemini && !hasGroq) {
+    throw new Error('No API keys configured. Open extension popup and save at least one key.');
+  }
+
+  // Strategy: Try Gemini first (unless in backoff), fall back to Groq
+  const now = Date.now();
+  const geminiInBackoff = now < geminiBackoffUntil;
+
+  if (hasGemini && !geminiInBackoff) {
+    try {
+      console.log('[FormSolver BG] Attempting Gemini (primary)...');
+      const answers = await solveWithGemini(data.apiKey, questions);
+      return { answers, provider: 'gemini' };
+    } catch (err) {
+      console.warn('[FormSolver BG] Gemini failed:', err.message);
+
+      // If rate-limited or overloaded, set backoff (60s)
+      if (isOverloadError(err)) {
+        geminiBackoffUntil = Date.now() + 60000;
+        console.log('[FormSolver BG] Gemini backoff set for 60s');
+      }
+
+      // Fall through to Groq if available
+      if (hasGroq) {
+        console.log('[FormSolver BG] Falling back to Groq...');
+        const answers = await solveWithGroq(data.groqApiKey, questions);
+        return { answers, provider: 'groq', fallback: true, geminiError: err.message };
+      }
+
+      throw err; // No fallback available
+    }
+  }
+
+  if (hasGroq) {
+    console.log(`[FormSolver BG] Using Groq ${geminiInBackoff ? '(Gemini in backoff)' : '(no Gemini key)'}...`);
+    const answers = await solveWithGroq(data.groqApiKey, questions);
+    return { answers, provider: 'groq' };
+  }
+
+  // Gemini is in backoff and no Groq key
+  throw new Error('Gemini is rate-limited and no Groq fallback key is set. Wait a minute or add a Groq key.');
+}
+
+function isOverloadError(err) {
+  const msg = (err.message || '').toLowerCase();
+  return msg.includes('429') || msg.includes('503') || msg.includes('overloaded')
+    || msg.includes('resource exhausted') || msg.includes('rate limit')
+    || msg.includes('quota') || msg.includes('too many requests');
 }
 
 // ── Fetch image as base64 from background (has host_permissions) ──
 async function fetchImageBase64(url) {
   try {
-    console.log('[FormSolver BG] Fetching image:', url.substring(0, 100));
     const resp = await fetch(url);
-    if (!resp.ok) {
-      console.warn('[FormSolver BG] Image fetch failed:', resp.status);
-      return null;
-    }
+    if (!resp.ok) return null;
     const blob = await resp.blob();
-    const arrayBuffer = await blob.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
-
-    // Convert to base64 manually (no FileReader in service workers)
+    const bytes = new Uint8Array(await blob.arrayBuffer());
     let binary = '';
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    const base64 = btoa(binary);
-    const mimeType = blob.type || 'image/png';
-
-    console.log('[FormSolver BG] Image converted: mime=' + mimeType + ' base64Length=' + base64.length);
-    return { base64, mimeType };
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return { base64: btoa(binary), mimeType: blob.type || 'image/png' };
   } catch (err) {
     console.error('[FormSolver BG] Image fetch error:', err);
     return null;
   }
 }
 
-// ── Build prompt ──
-function buildPrompt(questions) {
-  let prompt = `You are an expert professor in Engineering (Physics, Chemistry, Mathematics, Python, Computer Science) at Mumbai University. You are solving a quiz for a first-year student.
+// ── Build prompt — adapts to whether images are present ──
+function buildPrompt(questions, hasAnyImages) {
+  let prompt;
 
-IMPORTANT CONTEXT:
-- Each question has an IMAGE attached showing the ACTUAL question text and answer options from an exam platform.
-- The Google Form only has generic clickable labels: "Option 1", "Option 2", "Option 3", "Option 4".
-- The image shows which answer each Option number corresponds to.
+  if (hasAnyImages) {
+    prompt = `You are an expert professor in Engineering (Physics, Chemistry, Mathematics, Python, Computer Science) at Mumbai University. You are solving a quiz for a first-year student.
 
-YOUR TASK (follow step by step for EACH question):
-1. READ the image carefully — identify the subject (Math, Physics, Chemistry, Python, etc.)
-2. READ the full question text from the image.
-3. READ all answer choices shown next to Option 1, Option 2, Option 3, Option 4 in the image.
-4. SOLVE the question using your expert knowledge. Think step by step.
-5. DETERMINE which Option number has the correct answer.
-6. Return ONLY that "Option X" string.
+CONTEXT:
+- Some questions have an IMAGE attached showing the ACTUAL question text and answer options from an exam platform.
+- The Google Form may only have generic labels like "Option 1", "Option 2", etc.
+- For image questions: the image shows what each Option number corresponds to.
+- For text-only questions: the question and options are provided directly in text below.
+
+YOUR TASK for EACH question:
+1. If an image is attached, READ the image to get the real question and options.
+2. If no image, use the text question and DOM options provided.
+3. SOLVE the question step by step.
+4. Return the correct option label exactly as shown (e.g. "Option 1" or the actual text label).
 
 CRITICAL RULES:
-- Return ONLY ONE correct option per radio question — never return all options.
-- For checkbox questions, return ONLY the correct option(s) as an array.
-- Your answer MUST be one of: "Option 1", "Option 2", "Option 3", or "Option 4".
+- Return ONLY ONE answer per radio question.
+- For checkbox questions, return ONLY the correct option(s) — comma-separated if multiple.
+- Your answer MUST match one of the provided option labels exactly.
 
-RESPONSE FORMAT:
-Return strictly valid JSON only. You must use double quotes for all keys (e.g., "index" and "answer"). No trailing commas. No markdown formatting.
-Example: [{"index": 0, "answer": "Option 3"}, {"index": 1, "answer": "Option 1"}]
+RESPONSE FORMAT — strict JSON array, no markdown:
+[{"index": 0, "answer": "Option 3"}, {"index": 1, "answer": "Option 1"}]
+
+QUESTIONS:
+`;
+  } else {
+    // Pure text-only form — simpler, faster prompt
+    prompt = `You are an expert professor in Engineering (Physics, Chemistry, Mathematics, Python, Computer Science). Solve these quiz questions.
+
+For each question, pick the correct option from the choices listed. Return your answer as a strict JSON array.
+
+RULES:
+- One answer per radio question. Your answer must exactly match one of the listed options.
+- For checkbox questions return correct option(s) comma-separated.
+
+FORMAT — strict JSON, no markdown:
+[{"index": 0, "answer": "the correct option text"}, {"index": 1, "answer": "the correct option text"}]
+
+QUESTIONS:
+`;
+  }
+
+  questions.forEach((q, i) => {
+    prompt += `\n---\nQuestion ID: ${q.index}\nType: ${q.type}\nTitle: ${q.question}\n`;
+    if (q.options && q.options.length > 0) {
+      prompt += `Options: ${q.options.join(' | ')}\n`;
+    }
+    if (q.imageUrl) {
+      prompt += `[Image ${i + 1} attached — use it to read the real question & options]\n`;
+    }
+  });
+
+  return prompt;
+}
+
+// ── Build text-only prompt for Groq (no image support) ──
+function buildTextOnlyPrompt(questions) {
+  let prompt = `You are an expert professor in Engineering (Physics, Chemistry, Mathematics, Python, Computer Science). Solve these quiz questions.
+
+For each question, pick the correct option from the choices listed. Return your answer as a strict JSON array.
+
+RULES:
+- One answer per radio question. Your answer must exactly match one of the listed options.
+- For checkbox questions return correct option(s) comma-separated.
+- IMPORTANT: Return ONLY a JSON array, no explanation, no markdown fences.
+
+FORMAT — strict JSON:
+[{"index": 0, "answer": "the correct option text"}, {"index": 1, "answer": "the correct option text"}]
 
 QUESTIONS:
 `;
@@ -87,10 +175,10 @@ QUESTIONS:
   questions.forEach((q, i) => {
     prompt += `\n---\nQuestion ID: ${q.index}\nType: ${q.type}\nTitle: ${q.question}\n`;
     if (q.options && q.options.length > 0) {
-      prompt += `DOM Options: ${q.options.join(' | ')}\n`;
+      prompt += `Options: ${q.options.join(' | ')}\n`;
     }
     if (q.imageUrl) {
-      prompt += `[Image ${i + 1} is attached — analyze it to find the answer]\n`;
+      prompt += `[Note: An image was attached to this question but cannot be processed by this model. Answer based on the text content available.]\n`;
     }
   });
 
@@ -108,38 +196,55 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
-// ── Call Gemini ──
+// ══════════════════════════════════════════════════
+//  GEMINI PROVIDER
+// ══════════════════════════════════════════════════
+
 async function solveWithGemini(apiKey, questions) {
-  const promptText = buildPrompt(questions);
+  const hasAnyImages = questions.some(q => q.imageUrl);
+  const promptText = buildPrompt(questions, hasAnyImages);
   const parts = [{ text: promptText }];
 
-  // Fetch all images from background (we have host_permissions)
-  let imgCount = 0;
-  for (const q of questions) {
-    if (q.imageUrl) {
-      const imgData = await fetchImageBase64(q.imageUrl);
+  // Fetch ALL images in parallel (not one-by-one)
+  if (hasAnyImages) {
+    const imagePromises = questions
+      .filter(q => q.imageUrl)
+      .map(q => fetchImageBase64(q.imageUrl));
+
+    const imageResults = await Promise.all(imagePromises);
+    let imgCount = 0;
+    for (const imgData of imageResults) {
       if (imgData) {
         parts.push({
-          inline_data: {
-            mime_type: imgData.mimeType,
-            data: imgData.base64
-          }
+          inline_data: { mime_type: imgData.mimeType, data: imgData.base64 }
         });
         imgCount++;
       }
     }
+    console.log(`[FormSolver BG] ${imgCount} images fetched in parallel`);
   }
 
-  console.log(`[FormSolver BG] Sending ${questions.length} questions with ${imgCount} images to Gemini`);
+  console.log(`[FormSolver BG] Sending ${questions.length} Qs (images: ${hasAnyImages}) to ${GEMINI_MODEL}`);
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
 
   const body = {
     contents: [{ role: 'user', parts }],
-    generationConfig: { 
-      temperature: 0.1, 
+    generationConfig: {
+      temperature: 0.1,
       maxOutputTokens: 4096,
-      responseMimeType: 'application/json' 
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: 'ARRAY',
+        items: {
+          type: 'OBJECT',
+          properties: {
+            index: { type: 'INTEGER' },
+            answer: { type: 'STRING' }
+          },
+          required: ['index', 'answer']
+        }
+      }
     }
   };
 
@@ -157,37 +262,120 @@ async function solveWithGemini(apiKey, questions) {
   const data = await resp.json();
   console.log('[FormSolver BG] Gemini response received');
 
-  // Find the JSON part (Gemini 2.5 may have thinking parts)
+  return parseGeminiResponse(data);
+}
+
+function parseGeminiResponse(data) {
   const allParts = data?.candidates?.[0]?.content?.parts || [];
   let raw = null;
-
-  // Look for the part containing JSON
   for (const p of allParts) {
-    if (p.text && p.text.includes('"index"')) {
-      raw = p.text;
-      break;
-    }
+    if (p.text && p.text.includes('"index"')) { raw = p.text; break; }
   }
-  // Fallback: last text part
   if (!raw) {
     for (let i = allParts.length - 1; i >= 0; i--) {
       if (allParts[i].text) { raw = allParts[i].text; break; }
     }
   }
-
   if (!raw) throw new Error('Gemini returned empty response.');
 
-  console.log('[FormSolver BG] Raw text:', raw.substring(0, 400));
+  console.log('[FormSolver BG] Raw:', raw.substring(0, 300));
+  return cleanAndParseJSON(raw);
+}
 
-  // Extract JSON array
-  let cleaned = raw.trim()
-    .replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+// ══════════════════════════════════════════════════
+//  GROQ PROVIDER
+// ══════════════════════════════════════════════════
 
-  const start = cleaned.indexOf('[');
-  const end = cleaned.lastIndexOf(']');
-  if (start !== -1 && end > start) {
-    cleaned = cleaned.substring(start, end + 1);
+async function solveWithGroq(apiKey, questions) {
+  const promptText = buildTextOnlyPrompt(questions);
+
+  console.log(`[FormSolver BG] Sending ${questions.length} Qs to Groq (${GROQ_MODEL})`);
+
+  const url = 'https://api.groq.com/openai/v1/chat/completions';
+
+  const body = {
+    model: GROQ_MODEL,
+    messages: [
+      {
+        role: 'system',
+        content: 'You are an expert professor. Return ONLY valid JSON arrays. No markdown, no explanation, no code fences.'
+      },
+      {
+        role: 'user',
+        content: promptText
+      }
+    ],
+    temperature: 0.1,
+    max_tokens: 4096,
+    response_format: { type: 'json_object' }
+  };
+
+  const resp = await fetchWithTimeout(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(body)
+  }, TIMEOUT_MS);
+
+  if (!resp.ok) {
+    const e = await resp.json().catch(() => ({}));
+    throw new Error('Groq API: ' + (e?.error?.message || `HTTP ${resp.status}`));
   }
 
-  return JSON.parse(cleaned);
+  const data = await resp.json();
+  console.log('[FormSolver BG] Groq response received');
+
+  return parseGroqResponse(data);
+}
+
+function parseGroqResponse(data) {
+  const raw = data?.choices?.[0]?.message?.content;
+  if (!raw) throw new Error('Groq returned empty response.');
+
+  console.log('[FormSolver BG] Groq raw:', raw.substring(0, 300));
+
+  // Groq with json_object mode may wrap in { "answers": [...] } or return bare array
+  let parsed;
+  try {
+    parsed = JSON.parse(raw.trim());
+  } catch {
+    // Try to extract JSON array from the response
+    return cleanAndParseJSON(raw);
+  }
+
+  // Handle wrapped format: { "answers": [...] } or { "results": [...] }
+  if (Array.isArray(parsed)) return parsed;
+  if (parsed.answers && Array.isArray(parsed.answers)) return parsed.answers;
+  if (parsed.results && Array.isArray(parsed.results)) return parsed.results;
+
+  // Look for the first array value in the object
+  for (const val of Object.values(parsed)) {
+    if (Array.isArray(val) && val.length > 0 && val[0].index !== undefined) return val;
+  }
+
+  throw new Error('Groq response format unexpected. Got: ' + raw.substring(0, 200));
+}
+
+// ══════════════════════════════════════════════════
+//  SHARED UTILITIES
+// ══════════════════════════════════════════════════
+
+function cleanAndParseJSON(raw) {
+  let cleaned = raw.trim();
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+  }
+  if (!cleaned.startsWith('[')) {
+    const s = cleaned.indexOf('['), e = cleaned.lastIndexOf(']');
+    if (s !== -1 && e > s) cleaned = cleaned.substring(s, e + 1);
+  }
+
+  try {
+    return JSON.parse(cleaned);
+  } catch (err) {
+    console.error('[FormSolver BG] Parse failed:', err.message, '\nCleaned:', cleaned.substring(0, 500));
+    throw new Error('AI returned malformed data. Please try again.');
+  }
 }
