@@ -98,10 +98,13 @@ async function fetchImageBase64(url) {
 
 // ── Build prompt — adapts to whether images are present ──
 function buildPrompt(questions, hasAnyImages) {
+  const totalQ = questions.length;
   let prompt;
 
   if (hasAnyImages) {
-    prompt = `You are an expert professor in Engineering (Physics, Chemistry, Mathematics, Python, Computer Science) at Mumbai University. You are solving a quiz for a first-year student.
+    prompt = `You are solving an Engineering quiz (Physics, Chemistry, Mathematics, Python, Computer Science).
+
+There are ${totalQ} questions below. You MUST answer ALL ${totalQ} of them.
 
 CONTEXT:
 - Some questions have an IMAGE attached showing the ACTUAL question text and answer options from an exam platform.
@@ -116,9 +119,11 @@ YOUR TASK for EACH question:
 4. Return the correct option label exactly as shown (e.g. "Option 1" or the actual text label).
 
 CRITICAL RULES:
+- You MUST return exactly ${totalQ} answer objects — one for each question.
 - Return ONLY ONE answer per radio question.
 - For checkbox questions, return ONLY the correct option(s) — comma-separated if multiple.
 - Your answer MUST match one of the provided option labels exactly.
+- Do NOT generate names, emails, or personal information. Only answer academic questions.
 
 RESPONSE FORMAT — strict JSON array, no markdown:
 [{"index": 0, "answer": "Option 3"}, {"index": 1, "answer": "Option 1"}]
@@ -126,14 +131,16 @@ RESPONSE FORMAT — strict JSON array, no markdown:
 QUESTIONS:
 `;
   } else {
-    // Pure text-only form — simpler, faster prompt
-    prompt = `You are an expert professor in Engineering (Physics, Chemistry, Mathematics, Python, Computer Science). Solve these quiz questions.
+    prompt = `You are solving an Engineering quiz (Physics, Chemistry, Mathematics, Python, Computer Science).
 
-For each question, pick the correct option from the choices listed. Return your answer as a strict JSON array.
+There are ${totalQ} questions below. You MUST answer ALL ${totalQ} of them.
 
 RULES:
+- You MUST return exactly ${totalQ} answer objects — one for each question.
 - One answer per radio question. Your answer must exactly match one of the listed options.
 - For checkbox questions return correct option(s) comma-separated.
+- For text/short-answer questions, provide the correct answer.
+- Do NOT generate names, emails, or any personal information.
 
 FORMAT — strict JSON, no markdown:
 [{"index": 0, "answer": "the correct option text"}, {"index": 1, "answer": "the correct option text"}]
@@ -143,7 +150,7 @@ QUESTIONS:
   }
 
   questions.forEach((q, i) => {
-    prompt += `\n---\nQuestion ID: ${q.index}\nType: ${q.type}\nTitle: ${q.question}\n`;
+    prompt += `\n---\nQuestion ${i + 1} of ${totalQ} (ID: ${q.index})\nType: ${q.type}\nTitle: ${q.question}\n`;
     if (q.options && q.options.length > 0) {
       prompt += `Options: ${q.options.join(' | ')}\n`;
     }
@@ -152,18 +159,23 @@ QUESTIONS:
     }
   });
 
+  prompt += `\n---\nREMINDER: Return exactly ${totalQ} answers in a JSON array. Do not skip any question.\n`;
+
   return prompt;
 }
 
 // ── Build text-only prompt for Groq (no image support) ──
 function buildTextOnlyPrompt(questions) {
-  let prompt = `You are an expert professor in Engineering (Physics, Chemistry, Mathematics, Python, Computer Science). Solve these quiz questions.
+  const totalQ = questions.length;
+  let prompt = `You are solving an Engineering quiz (Physics, Chemistry, Mathematics, Python, Computer Science).
 
-For each question, pick the correct option from the choices listed. Return your answer as a strict JSON array.
+There are ${totalQ} questions. You MUST answer ALL ${totalQ} of them.
 
 RULES:
+- You MUST return exactly ${totalQ} answer objects — one for each question.
 - One answer per radio question. Your answer must exactly match one of the listed options.
 - For checkbox questions return correct option(s) comma-separated.
+- Do NOT generate names, emails, or personal information.
 - IMPORTANT: Return ONLY a JSON array, no explanation, no markdown fences.
 
 FORMAT — strict JSON:
@@ -173,14 +185,16 @@ QUESTIONS:
 `;
 
   questions.forEach((q, i) => {
-    prompt += `\n---\nQuestion ID: ${q.index}\nType: ${q.type}\nTitle: ${q.question}\n`;
+    prompt += `\n---\nQuestion ${i + 1} of ${totalQ} (ID: ${q.index})\nType: ${q.type}\nTitle: ${q.question}\n`;
     if (q.options && q.options.length > 0) {
       prompt += `Options: ${q.options.join(' | ')}\n`;
     }
     if (q.imageUrl) {
-      prompt += `[Note: An image was attached to this question but cannot be processed by this model. Answer based on the text content available.]\n`;
+      prompt += `[Note: An image was attached but cannot be processed by this model. Answer based on text only.]\n`;
     }
   });
+
+  prompt += `\n---\nREMINDER: Return exactly ${totalQ} answers. Do not skip any.\n`;
 
   return prompt;
 }
@@ -232,7 +246,7 @@ async function solveWithGemini(apiKey, questions) {
     contents: [{ role: 'user', parts }],
     generationConfig: {
       temperature: 0.1,
-      maxOutputTokens: 4096,
+      maxOutputTokens: 8192,
       responseMimeType: 'application/json',
       responseSchema: {
         type: 'ARRAY',

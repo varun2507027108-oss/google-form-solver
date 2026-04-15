@@ -1,12 +1,13 @@
 /**
- * FORM SOLVER v3.5 — Content Script
+ * FORM SOLVER v4.0 — Content Script
+ * Robust multi-strategy question detection.
  * Multi-page form support via MutationObserver.
  * Sends image URLs to background (no canvas CORS issues).
  */
 (function () {
   'use strict';
 
-  console.log('[FormSolver v3.5] Script loaded at', new Date().toISOString());
+  console.log('[FormSolver v4.0] Script loaded at', new Date().toISOString());
 
   const INITIAL_WAIT = 2500;
   const PAGE_CHANGE_DEBOUNCE = 800;
@@ -46,7 +47,7 @@
   // ── Ensure FAB persists (Google Forms may nuke custom DOM on page change) ──
   function ensureFAB() {
     if (!document.getElementById('fs-fab')) {
-      console.log('[FormSolver v3.5] FAB missing after page change — re-injecting');
+      console.log('[FormSolver v4.0] FAB missing after page change — re-injecting');
       injectFAB();
     }
   }
@@ -65,11 +66,10 @@
     chrome.storage.local.get(['userName', 'userEmail', 'userRollNo', 'userDiv', 'userBranch'], data => {
       if (!data.userName && !data.userEmail) return;
 
-      // Get only VISIBLE list items on the current page/section
-      const items = getVisibleListItems();
+      const containers = getQuestionContainers();
       let filled = 0;
 
-      items.forEach(item => {
+      containers.forEach(item => {
         const inputs = item.querySelectorAll('input[type="text"], input[type="email"], textarea');
         if (!inputs.length) return;
         const txt = item.innerText.toLowerCase();
@@ -100,65 +100,346 @@
       });
 
       if (filled > 0) {
-        console.log(`[FormSolver v3.5] Auto-filled ${filled} fields on current page`);
+        console.log(`[FormSolver v4.0] Auto-filled ${filled} fields on current page`);
       }
     });
   }
 
-  // ── Get only visible list items (handles multi-page forms) ──
-  function getVisibleListItems() {
-    const allItems = document.querySelectorAll('div[role="listitem"]');
-    const visible = [];
-    for (const item of allItems) {
-      // Skip items that are hidden (display:none, visibility:hidden, or zero-size)
-      if (item.offsetParent === null && getComputedStyle(item).position !== 'fixed') continue;
-      if (item.offsetHeight === 0 && item.offsetWidth === 0) continue;
-      visible.push(item);
+  // ══════════════════════════════════════════════════
+  //  ROBUST QUESTION CONTAINER DETECTION
+  //  Strategy: Try multiple methods and deduplicate.
+  // ══════════════════════════════════════════════════
+
+  function getQuestionContainers() {
+    const containers = new Set();
+
+    // Strategy 1: div[role="listitem"] — standard Google Forms structure
+    document.querySelectorAll('div[role="listitem"]').forEach(el => {
+      if (!isHidden(el)) containers.add(el);
+    });
+
+    // Strategy 2: elements with data-params (Google Forms internal question marker)
+    document.querySelectorAll('[data-params]').forEach(el => {
+      // data-params is on the question container or a parent
+      // Walk up to find a reasonable container boundary
+      const container = el.closest('div[role="listitem"]') || findQuestionBoundary(el);
+      if (container && !isHidden(container)) containers.add(container);
+    });
+
+    // Strategy 3: Walk UP from interactive elements (radio, checkbox, text input)
+    // This catches questions even if they lack role="listitem"
+    document.querySelectorAll('div[role="radio"], div[role="checkbox"]').forEach(el => {
+      const container = findQuestionBoundary(el);
+      if (container && !isHidden(container)) containers.add(container);
+    });
+
+    // Strategy 4: Find by the freebirdFormviewerViewItemsItemItem class pattern
+    // Google Forms uses classes like "freebirdFormviewerViewNumberedItemContainer"
+    document.querySelectorAll('[class*="freebirdFormviewerViewItemsItemItem"], [class*="freebirdFormviewerViewNumberedItemContainer"]').forEach(el => {
+      if (!isHidden(el)) containers.add(el);
+    });
+
+    // Convert to array and sort by DOM order
+    const arr = Array.from(containers);
+    arr.sort((a, b) => {
+      const pos = a.compareDocumentPosition(b);
+      if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return 0;
+    });
+
+    // Deduplicate: remove containers that are children of other containers in our list
+    const deduped = [];
+    for (const container of arr) {
+      let isChild = false;
+      for (const other of arr) {
+        if (other !== container && other.contains(container)) {
+          isChild = true;
+          break;
+        }
+      }
+      if (!isChild) deduped.push(container);
     }
-    return visible;
+
+    console.log(`[FormSolver v4.0] Found ${deduped.length} question containers (from ${arr.length} before dedup)`);
+    return deduped;
   }
 
-  // ── Generate a signature of the current page to detect navigation ──
-  function getPageSignature() {
-    const items = getVisibleListItems();
-    // Use the text of headings + count of items as a fingerprint
-    const parts = [];
-    for (const item of items) {
-      const heading = item.querySelector('div[role="heading"]');
-      if (heading) {
-        parts.push(heading.innerText.substring(0, 60).trim());
+  // Walk up from an interactive element to find the nearest question boundary
+  function findQuestionBoundary(el) {
+    let current = el.parentElement;
+    let lastGoodContainer = null;
+
+    while (current && current !== document.body) {
+      // The question container is typically a direct child of the form's list
+      // or has specific structural markers
+      if (current.getAttribute('role') === 'listitem') return current;
+
+      // Check for Google Forms structural classes
+      const cls = current.className || '';
+      if (typeof cls === 'string') {
+        if (cls.includes('freebirdFormviewerViewItemsItemItem') ||
+            cls.includes('freebirdFormviewerViewNumberedItemContainer') ||
+            cls.includes('Qr7Oae')) {
+          return current;
+        }
+      }
+
+      // Heuristic: if this div's parent is a role="list" or the form,
+      // then this div is likely the question container
+      const parent = current.parentElement;
+      if (parent) {
+        const parentRole = parent.getAttribute('role');
+        if (parentRole === 'list' || parent.tagName === 'FORM') {
+          lastGoodContainer = current;
+        }
+      }
+
+      current = current.parentElement;
+    }
+
+    return lastGoodContainer;
+  }
+
+  // Check if an element is hidden (but NOT just offscreen/below the fold)
+  function isHidden(el) {
+    const style = getComputedStyle(el);
+    if (style.display === 'none') return true;
+    if (style.visibility === 'hidden') return true;
+    // Don't check bounding rect — items below the fold are NOT hidden,
+    // they just haven't been scrolled to yet
+    return false;
+  }
+
+  // ══════════════════════════════════════════════════
+  //  ROBUST QUESTION TITLE EXTRACTION
+  // ══════════════════════════════════════════════════
+
+  function getQuestionTitle(container) {
+    // 1. div[role="heading"] — standard Google Forms
+    const heading = container.querySelector('div[role="heading"]');
+    if (heading) {
+      const t = heading.innerText.split('\n')[0].trim();
+      if (t) return t;
+    }
+
+    // 2. span with role="heading"
+    const spanHeading = container.querySelector('span[role="heading"]');
+    if (spanHeading) {
+      const t = spanHeading.innerText.split('\n')[0].trim();
+      if (t) return t;
+    }
+
+    // 3. Element with aria-level (heading indicator)
+    const ariaHeading = container.querySelector('[aria-level]');
+    if (ariaHeading) {
+      const t = ariaHeading.innerText.split('\n')[0].trim();
+      if (t) return t;
+    }
+
+    // 4. data-value attribute (some Google Forms versions)
+    const dataValue = container.querySelector('[data-value]');
+    if (dataValue) {
+      const t = dataValue.innerText.trim();
+      if (t && t.length > 2) return t;
+    }
+
+    // 5. The first significant text block before any interactive elements
+    //    Walk through child elements and find text that precedes radio/checkbox/input
+    const textContent = extractTitleFromStructure(container);
+    if (textContent) return textContent;
+
+    return null;
+  }
+
+  // Extract title text by finding the text content that comes before
+  // any radio/checkbox/input elements in the container
+  function extractTitleFromStructure(container) {
+    // Get all text nodes and element nodes in order
+    const walker = document.createTreeWalker(
+      container,
+      NodeFilter.SHOW_ELEMENT,
+      {
+        acceptNode: (node) => {
+          // Stop at interactive elements
+          const role = node.getAttribute('role');
+          if (role === 'radio' || role === 'checkbox' || role === 'listbox') {
+            return NodeFilter.FILTER_REJECT;
+          }
+          if (node.tagName === 'INPUT' || node.tagName === 'TEXTAREA') {
+            return NodeFilter.FILTER_REJECT;
+          }
+          // Skip our own injected elements
+          if (node.id && node.id.startsWith('fs-')) {
+            return NodeFilter.FILTER_REJECT;
+          }
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      }
+    );
+
+    // Collect text from elements above the interactive area
+    let bestText = '';
+    let node;
+    while ((node = walker.nextNode())) {
+      // Look for elements that contain direct text (not just wrapper divs)
+      const directText = Array.from(node.childNodes)
+        .filter(n => n.nodeType === Node.TEXT_NODE)
+        .map(n => n.textContent.trim())
+        .join(' ')
+        .trim();
+
+      if (directText && directText.length > 2 && directText.length < 500) {
+        // Prefer the first substantial text block we find
+        if (!bestText || directText.length > bestText.length) {
+          bestText = directText;
+        }
+        // If we found something reasonable (at least a few words), use it
+        if (bestText.length > 5) break;
       }
     }
-    // Also include any "Page X of Y" indicator or progress bar state
-    const progressEl = document.querySelector('[role="progressbar"]');
-    const progress = progressEl ? progressEl.getAttribute('aria-valuenow') || '' : '';
-    return `${items.length}|${progress}|${parts.join('||')}`;
+
+    return bestText || null;
   }
 
-  // ── Called when we detect a page change in the form ──
+  // ══════════════════════════════════════════════════
+  //  FIND OPTIONS (radio/checkbox) WITHIN A CONTAINER
+  // ══════════════════════════════════════════════════
+
+  function getOptions(container) {
+    const radios = container.querySelectorAll('div[role="radio"]');
+    const checks = container.querySelectorAll('div[role="checkbox"]');
+    const texts = container.querySelectorAll('input[type="text"], textarea');
+    const dropdowns = container.querySelectorAll('div[role="listbox"]');
+
+    if (radios.length > 0) {
+      const opts = [];
+      radios.forEach(r => {
+        const label = r.getAttribute('aria-label') || r.innerText.trim();
+        if (label) opts.push(label);
+      });
+      return { type: 'radio', options: opts };
+    }
+
+    if (checks.length > 0) {
+      const opts = [];
+      checks.forEach(c => {
+        const label = c.getAttribute('aria-label') || c.innerText.trim();
+        if (label) opts.push(label);
+      });
+      return { type: 'checkbox', options: opts };
+    }
+
+    if (dropdowns.length > 0) {
+      // Try to get dropdown options
+      const opts = [];
+      const options = container.querySelectorAll('div[role="option"], [data-value]');
+      options.forEach(o => {
+        const label = o.getAttribute('data-value') || o.getAttribute('aria-label') || o.innerText.trim();
+        if (label) opts.push(label);
+      });
+      return { type: 'dropdown', options: opts };
+    }
+
+    if (texts.length > 0) {
+      return { type: 'text', options: [] };
+    }
+
+    return { type: null, options: [] };
+  }
+
+  // ── Keywords that indicate a personal-info field (handled by autoFill, not AI) ──
+  const PERSONAL_FIELD_KEYWORDS = ['name', 'email', 'roll', 'division', 'div', 'branch', 'dept', 'department',
+    'prn', 'enrollment', 'contact', 'phone', 'mobile', 'sapid', 'sap id', 'section',
+    'grade', 'class', 'semester', 'year', 'batch'];
+
+  function isPersonalField(titleLower) {
+    // Only consider it a personal field if it's a SHORT text question
+    // (actual quiz questions with these words in a longer sentence should still be sent to AI)
+    if (titleLower.length > 60) return false; // Long titles are likely actual questions
+    return PERSONAL_FIELD_KEYWORDS.some(kw => titleLower.includes(kw));
+  }
+
+  // ══════════════════════════════════════════════════
+  //  SCRAPE ALL QUESTIONS ON CURRENT PAGE
+  // ══════════════════════════════════════════════════
+
+  function scrapeQuestions() {
+    const containers = getQuestionContainers();
+    const qs = [];
+    console.log(`[FormSolver v4.0] Processing ${containers.length} containers`);
+
+    for (let i = 0; i < containers.length; i++) {
+      const container = containers[i];
+
+      // Get title
+      const title = getQuestionTitle(container);
+      if (!title) {
+        console.log(`[FormSolver v4.0] Container ${i}: no title found, skipping`);
+        continue;
+      }
+
+      // Get options/type
+      const { type, options: opts } = getOptions(container);
+      if (!type) {
+        console.log(`[FormSolver v4.0] Container ${i}: "${title}" — no interactive elements, skipping`);
+        continue;
+      }
+
+      // Skip personal-info text fields — handled by autoFill, not AI
+      if (type === 'text' && isPersonalField(title.toLowerCase())) {
+        console.log(`[FormSolver v4.0] Container ${i}: "${title}" — personal field, skipping`);
+        continue;
+      }
+
+      // Check for images
+      let imageUrl = null;
+      const img = container.querySelector('img[src]:not([src*="svg"])');
+      if (img && img.src) {
+        imageUrl = img.src;
+        console.log(`[FormSolver v4.0] Image URL for Q${qs.length}:`, imageUrl.substring(0, 100));
+      }
+
+      console.log(`[FormSolver v4.0] Q${qs.length}: "${title.substring(0, 60)}" (${type}) opts=[${opts.slice(0, 3).join(', ')}${opts.length > 3 ? '...' : ''}] img=${!!imageUrl}`);
+      qs.push({ index: qs.length, question: title, type, options: opts, imageUrl, container });
+    }
+
+    console.log(`[FormSolver v4.0] Total questions scraped: ${qs.length}`);
+    return qs;
+  }
+
+  // ══════════════════════════════════════════════════
+  //  PAGE CHANGE DETECTION (multi-page forms)
+  // ══════════════════════════════════════════════════
+
+  function getPageSignature() {
+    const containers = getQuestionContainers();
+    const parts = [];
+    for (const container of containers.slice(0, 5)) { // Sample first 5 for performance
+      const title = getQuestionTitle(container);
+      if (title) parts.push(title.substring(0, 40));
+    }
+    const progressEl = document.querySelector('[role="progressbar"]');
+    const progress = progressEl ? progressEl.getAttribute('aria-valuenow') || '' : '';
+    return `${containers.length}|${progress}|${parts.join('||')}`;
+  }
+
   function onPageChange() {
     const newSig = getPageSignature();
-    if (newSig === lastPageSignature) return; // No actual change
+    if (newSig === lastPageSignature) return;
 
     lastPageSignature = newSig;
-    console.log('[FormSolver v3.5] Page change detected. New signature:', newSig.substring(0, 100));
+    console.log('[FormSolver v4.0] Page change detected. New signature:', newSig.substring(0, 100));
 
-    // Re-ensure FAB exists
     ensureFAB();
-
-    // Re-run autofill for the new page
     autoFill();
-
-    // Clear any previous answer highlights from old page
     clearHighlights();
   }
 
-  // ── Clear stale highlights from previous page ──
   function clearHighlights() {
     document.querySelectorAll('.fs-correct-highlight').forEach(el => {
       el.classList.remove('fs-correct-highlight');
     });
-    // Also clear inline styles from the old highlighting approach
     document.querySelectorAll('[style*="inset 4px 0 0 #00f0ff"]').forEach(el => {
       el.style.removeProperty('outline');
       el.style.removeProperty('outline-offset');
@@ -170,21 +451,16 @@
 
   // ── MutationObserver to detect page changes in multi-section forms ──
   function startObserver() {
-    // Google Forms renders sections inside a specific container
-    // We watch the form container for child additions/removals
     const formContainer = document.querySelector('form')
       || document.querySelector('[role="list"]')?.parentElement
       || document.body;
 
     observer = new MutationObserver((mutations) => {
-      // Debounce: Google Forms makes many rapid DOM changes during transitions
       clearTimeout(pageChangeTimer);
       pageChangeTimer = setTimeout(() => {
-        // Check if any mutation actually involves list items or structural changes
         let hasStructuralChange = false;
         for (const m of mutations) {
           if (m.type === 'childList' && (m.addedNodes.length > 0 || m.removedNodes.length > 0)) {
-            // Check if the change involves form content (not just our own injections)
             for (const node of m.addedNodes) {
               if (node.nodeType === Node.ELEMENT_NODE && !node.id?.startsWith('fs-')) {
                 hasStructuralChange = true;
@@ -212,92 +488,48 @@
       subtree: true
     });
 
-    console.log('[FormSolver v3.5] MutationObserver watching:', formContainer.tagName);
+    console.log('[FormSolver v4.0] MutationObserver watching:', formContainer.tagName);
   }
 
-  // ── Also intercept "Next" and "Back" button clicks directly ──
+  // ── Intercept navigation button clicks ──
   function interceptNavButtons() {
     document.addEventListener('click', (e) => {
       const target = e.target.closest('[role="button"], button');
       if (!target) return;
 
       const text = (target.innerText || target.textContent || '').trim().toLowerCase();
-      // Google Forms uses "Next", "Back", "Submit" — various languages too
       const isNavButton = ['next', 'back', 'previous', 'submit',
-        'अगला', 'पिछला', // Hindi
-        'आगे', 'पीछे'
+        'अगला', 'पिछला', 'आगे', 'पीछे'
       ].some(kw => text.includes(kw));
 
-      // Also catch the arrow-style navigation buttons (no text, just icons)
       const ariaLabel = (target.getAttribute('aria-label') || '').toLowerCase();
       const isNavArrow = ariaLabel.includes('next') || ariaLabel.includes('back')
         || ariaLabel.includes('previous') || ariaLabel.includes('forward');
 
       if (isNavButton || isNavArrow) {
-        console.log(`[FormSolver v3.5] Nav button clicked: "${text || ariaLabel}"`);
-        // Wait for the new page to render before re-processing
+        console.log(`[FormSolver v4.0] Nav button clicked: "${text || ariaLabel}"`);
         setTimeout(() => onPageChange(), 1200);
-        setTimeout(() => onPageChange(), 2500); // Double-check in case of slow render
+        setTimeout(() => onPageChange(), 2500);
       }
-    }, true); // Capture phase to catch it before Google's handler
+    }, true);
   }
 
-  // ── Scrape questions — only from the VISIBLE page ──
-  function scrapeQuestions() {
-    const items = getVisibleListItems();
-    const qs = [];
-    console.log('[FormSolver v3.5] Visible containers:', items.length);
+  // ══════════════════════════════════════════════════
+  //  APPLY ANSWERS TO THE PAGE
+  // ══════════════════════════════════════════════════
 
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      const heading = item.querySelector('div[role="heading"]');
-      if (!heading) continue;
-      const title = heading.innerText.split('\n')[0].trim();
-      if (!title) continue;
-
-      const radios = item.querySelectorAll('div[role="radio"]');
-      const checks = item.querySelectorAll('div[role="checkbox"]');
-      const texts  = item.querySelectorAll('input[type="text"], textarea');
-
-      // Just grab the image URL — background script will fetch it
-      let imageUrl = null;
-      const img = item.querySelector('img[src]:not([src*="svg"])');
-      if (img && img.src) {
-        imageUrl = img.src;
-        console.log('[FormSolver v3.5] Image URL for Q' + i + ':', imageUrl.substring(0, 100));
-      }
-
-      let type = null, opts = [];
-      if (radios.length) {
-        type = 'radio';
-        radios.forEach(r => opts.push(r.getAttribute('aria-label') || r.innerText.trim()));
-      } else if (checks.length) {
-        type = 'checkbox';
-        checks.forEach(c => opts.push(c.getAttribute('aria-label') || c.innerText.trim()));
-      } else if (texts.length) {
-        type = 'text';
-      }
-
-      if (type) {
-        console.log(`[FormSolver v3.5] Q${i}: "${title}" (${type}) opts=[${opts.join(', ')}] img=${!!imageUrl}`);
-        qs.push({ index: i, question: title, type, options: opts, imageUrl, container: item });
-      }
-    }
-    return qs;
-  }
-
-  // ── Apply one answer to the page ──
   function applyAnswer(q, ansObj) {
     const c = q.container;
     const target = ansObj.answer;
-    console.log(`[FormSolver v3.5] Applying Q${q.index}: AI said "${target}"`);
+    console.log(`[FormSolver v4.0] Applying Q${q.index}: AI said "${target}"`);
 
     if (q.type === 'radio') {
       const radios = c.querySelectorAll('div[role="radio"]');
       const targetStr = String(target).trim().toLowerCase();
 
+      let matched = false;
       radios.forEach(r => {
-        const label = (r.getAttribute('aria-label') || '').trim().toLowerCase();
+        const label = (r.getAttribute('aria-label') || r.innerText || '').trim().toLowerCase();
         if (label === targetStr) {
           const el = r.closest('label') || r;
           el.style.setProperty('outline', '2px solid #00f0ff', 'important');
@@ -305,17 +537,40 @@
           el.style.setProperty('background-color', 'rgba(0, 240, 255, 0.05)', 'important');
           el.style.setProperty('border-radius', '2px', 'important');
           el.style.setProperty('box-shadow', 'inset 4px 0 0 #00f0ff', 'important');
-          console.log(`[FormSolver v3.5]   ✅ Radio MATCH: "${label}"`);
+          console.log(`[FormSolver v4.0]   ✅ Radio MATCH: "${label}"`);
+          matched = true;
         }
       });
 
+      // Fuzzy fallback: if no exact match, try partial/includes matching
+      if (!matched) {
+        radios.forEach(r => {
+          const label = (r.getAttribute('aria-label') || r.innerText || '').trim().toLowerCase();
+          if (label.includes(targetStr) || targetStr.includes(label)) {
+            const el = r.closest('label') || r;
+            el.style.setProperty('outline', '2px solid #ffa032', 'important');
+            el.style.setProperty('outline-offset', '4px', 'important');
+            el.style.setProperty('background-color', 'rgba(255, 160, 50, 0.05)', 'important');
+            el.style.setProperty('border-radius', '2px', 'important');
+            el.style.setProperty('box-shadow', 'inset 4px 0 0 #ffa032', 'important');
+            console.log(`[FormSolver v4.0]   ⚠️ Radio FUZZY match: "${label}" ≈ "${targetStr}"`);
+            matched = true;
+          }
+        });
+      }
+
+      if (!matched) {
+        console.warn(`[FormSolver v4.0]   ❌ No match for radio answer: "${targetStr}"`);
+        console.warn(`[FormSolver v4.0]      Available labels:`, Array.from(radios).map(r => r.getAttribute('aria-label')));
+      }
+
     } else if (q.type === 'checkbox') {
       const checks = c.querySelectorAll('div[role="checkbox"]');
-      const answers = Array.isArray(target) ? target : [target];
+      const answers = Array.isArray(target) ? target : String(target).split(',').map(s => s.trim());
       const ansSet = new Set(answers.map(a => String(a).trim().toLowerCase()));
 
       checks.forEach(cb => {
-        const label = (cb.getAttribute('aria-label') || '').trim().toLowerCase();
+        const label = (cb.getAttribute('aria-label') || cb.innerText || '').trim().toLowerCase();
         if (ansSet.has(label)) {
           const el = cb.closest('label') || cb;
           el.style.setProperty('outline', '2px solid #00f0ff', 'important');
@@ -323,9 +578,27 @@
           el.style.setProperty('background-color', 'rgba(0, 240, 255, 0.05)', 'important');
           el.style.setProperty('border-radius', '2px', 'important');
           el.style.setProperty('box-shadow', 'inset 4px 0 0 #00f0ff', 'important');
-          console.log(`[FormSolver v3.5]   ✅ Checkbox MATCH: "${label}"`);
+          console.log(`[FormSolver v4.0]   ✅ Checkbox MATCH: "${label}"`);
         }
       });
+
+    } else if (q.type === 'dropdown') {
+      // For dropdowns, try to click the correct option
+      const listbox = c.querySelector('div[role="listbox"]');
+      if (listbox) {
+        listbox.click(); // Open dropdown
+        setTimeout(() => {
+          const options = document.querySelectorAll('div[role="option"]');
+          const targetStr = String(target).trim().toLowerCase();
+          options.forEach(opt => {
+            const label = (opt.getAttribute('data-value') || opt.innerText || '').trim().toLowerCase();
+            if (label === targetStr || label.includes(targetStr)) {
+              opt.click();
+              console.log(`[FormSolver v4.0]   ✅ Dropdown MATCH: "${label}"`);
+            }
+          });
+        }, 300);
+      }
 
     } else if (q.type === 'text' && target) {
       const input = c.querySelector('input[type="text"], textarea');
@@ -337,7 +610,10 @@
     }
   }
 
-  // ── Main solver ──
+  // ══════════════════════════════════════════════════
+  //  MAIN SOLVER
+  // ══════════════════════════════════════════════════
+
   async function runSolver() {
     const fab = document.getElementById('fs-fab');
     fab.classList.add('solving');
@@ -345,21 +621,21 @@
 
     showToast('Scanning current page...');
 
-    // Small delay to ensure DOM is fully settled (important after page navigation)
-    await new Promise(r => setTimeout(r, 300));
+    // Let DOM settle
+    await new Promise(r => setTimeout(r, 500));
 
     const questions = scrapeQuestions();
 
     if (!questions.length) {
-      showToast('No questions found on this page. Try clicking the button after the page fully loads.');
+      showToast('No questions found on this page. Try clicking after the page fully loads.');
       fab.classList.remove('solving');
       fab.disabled = false;
       return;
     }
 
-    showToast(`Found ${questions.length} questions on this page. Sending to AI...`);
+    showToast(`Found ${questions.length} questions. Sending to AI...`);
 
-    // Send image URLs (not base64) — background will fetch them
+    // Prepare payload — exclude container (DOM node) from the message
     const payload = questions.map(q => ({
       index: q.index, question: q.question, type: q.type, options: q.options, imageUrl: q.imageUrl
     }));
@@ -377,10 +653,9 @@
           if (q) { applyAnswer(q, ans); count++; }
         });
 
-        // Show which provider was used
         const provider = (response.provider || 'gemini').toUpperCase();
         const fallbackNote = response.fallback ? ' (Gemini overloaded → fallback)' : '';
-        showToast(`${count} anomalies resolved via ${provider}${fallbackNote}`);
+        showToast(`${count} answers applied via ${provider}${fallbackNote}`);
       }
       fab.classList.remove('solving');
       fab.disabled = false;
@@ -394,13 +669,12 @@
     injectFAB();
     autoFill();
 
-    // Record initial page signature
     lastPageSignature = getPageSignature();
 
-    // Start watching for page changes (Next/Back in multi-section forms)
     startObserver();
     interceptNavButtons();
 
-    console.log('[FormSolver v3.5] Initialized with multi-page support. Signature:', lastPageSignature.substring(0, 80));
+    const containers = getQuestionContainers();
+    console.log(`[FormSolver v4.0] Initialized. Found ${containers.length} question containers. Signature: ${lastPageSignature.substring(0, 80)}`);
   }, INITIAL_WAIT);
 })();
